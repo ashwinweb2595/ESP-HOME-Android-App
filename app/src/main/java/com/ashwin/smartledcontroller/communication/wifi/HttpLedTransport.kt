@@ -19,24 +19,37 @@ class HttpLedTransport(
     private var connected = false
 
     override suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val response = executeRequest(
-                path = "/api/v1/status",
-                method = "GET"
+        connected = false
+
+        val response = executeRequest(
+            path = "/api/v1/status",
+            method = "GET"
+        )
+
+        val json = JSONObject(response)
+
+        if (!json.optBoolean("ok", false)) {
+            throw IllegalStateException(
+                "ESP32 status endpoint reported ok=false"
             )
-
-            val json = JSONObject(response)
-
-            connected =
-                json.optBoolean("ok", false) &&
-                json.optString("device") == "smart-led-controller" &&
-                json.optInt("protocol", -1) == LedProtocol.VERSION
-
-            connected
-        } catch (exception: Exception) {
-            connected = false
-            false
         }
+
+        val device = json.optString("device")
+        if (device != "smart-led-controller") {
+            throw IllegalStateException(
+                "Unexpected device: $device"
+            )
+        }
+
+        val protocol = json.optInt("protocol", -1)
+        if (protocol != LedProtocol.VERSION) {
+            throw IllegalStateException(
+                "Unsupported protocol version: $protocol"
+            )
+        }
+
+        connected = true
+        true
     }
 
     override suspend fun disconnect() {
