@@ -2,11 +2,9 @@
 package com.ashwin.smartledcontroller
 
 import android.os.Bundle
-import com.ashwin.smartledcontroller.screens.devices.DeviceManagerScreen
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,11 +16,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ashwin.smartledcontroller.communication.protocol.LedCommand
+import com.ashwin.smartledcontroller.communication.wifi.HttpLedTransport
+import kotlinx.coroutines.launch
 
 private val AppBackground = Color(0xFF101722)
 private val CardBackground = Color(0xFF1D2938)
 private val Accent = Color(0xFFFFB45F)
 private val MutedText = Color(0xFF9EADBF)
+
+private data class SegmentUi(
+    val id: Int,
+    val name: String,
+    val start: Int,
+    val count: Int,
+    val brightness: Int,
+    val enabled: Boolean,
+    val color: String
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,21 +47,75 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun SmartLedApp() {
-    var brightness by remember { mutableFloatStateOf(35f) }
-    var selectedColor by remember { mutableStateOf("#FFB66D") }
-    var hexInput by remember { mutableStateOf("#FFB66D") }
-    var selectedSegment by remember { mutableIntStateOf(1) }
+    var ipAddress by remember { mutableStateOf("192.168.1.34") }
 
-    val presets = listOf(
-        "Warm White" to "#FFB66D",
-        "Natural White" to "#F5E9C9",
-        "Deep Amber" to "#FF8A24"
-    )
+    var transport by remember {
+        mutableStateOf<HttpLedTransport?>(null)
+    }
 
-    val previewColor = remember(selectedColor) {
-        runCatching {
-            Color(android.graphics.Color.parseColor(selectedColor))
-        }.getOrDefault(Color.White)
+    var connected by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf("Not connected") }
+    var errorMessage by remember { mutableStateOf("") }
+
+    var totalLeds by remember { mutableIntStateOf(0) }
+    var masterBrightness by remember { mutableIntStateOf(0) }
+    var segments by remember { mutableStateOf(emptyList<SegmentUi>()) }
+
+    val scope = rememberCoroutineScope()
+
+    fun refreshConfiguration(activeTransport: HttpLedTransport) {
+        scope.launch {
+            loading = true
+            errorMessage = ""
+
+            try {
+                val response = activeTransport.send(
+                    LedCommand.getConfig()
+                )
+
+                if (!response.ok) {
+                    errorMessage = response.error
+                        ?: response.message
+                    statusMessage = "Configuration retrieval failed"
+                    return@launch
+                }
+
+                val data = response.data
+                val segmentArray = data.optJSONArray("segments")
+
+                val updatedSegments = mutableListOf<SegmentUi>()
+
+                if (segmentArray != null) {
+                    for (index in 0 until segmentArray.length()) {
+                        val item = segmentArray.optJSONObject(index)
+                            ?: continue
+
+                        updatedSegments.add(
+                            SegmentUi(
+                                id = item.optInt("id"),
+                                name = item.optString("name"),
+                                start = item.optInt("start"),
+                                count = item.optInt("count"),
+                                brightness = item.optInt("brightness"),
+                                enabled = item.optBoolean("enabled"),
+                                color = item.optString("color")
+                            )
+                        )
+                    }
+                }
+
+                totalLeds = data.optInt("totalLeds")
+                masterBrightness = data.optInt("brightness")
+                segments = updatedSegments
+
+                statusMessage = "Configuration synchronized"
+            } catch (exception: Exception) {
+                errorMessage = exception.message ?: "Unknown error"
+            } finally {
+                loading = false
+            }
+        }
     }
 
     MaterialTheme(
@@ -71,7 +136,7 @@ fun SmartLedApp() {
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
 
                 // Header
@@ -96,111 +161,7 @@ fun SmartLedApp() {
                     )
                 }
 
-                // Connection status
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = CardBackground
-                    ),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(18.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                "ESP32 CONNECTION",
-                                color = MutedText,
-                                fontSize = 11.sp
-                            )
-                            Text(
-                                "Not connected",
-                                fontSize = 18.sp
-                            )
-                            Text(
-                                "Wi-Fi / Bluetooth",
-                                color = MutedText,
-                                fontSize = 12.sp
-                            )
-                        }
-
-                        Text(
-                            "OFFLINE",
-                            color = Accent,
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-
-                // Brightness
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = CardBackground
-                    ),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                "Brightness",
-                                fontSize = 19.sp
-                            )
-
-                            Text(
-                                "${brightness.toInt()}%",
-                                color = Accent,
-                                fontSize = 19.sp
-                            )
-                        }
-
-                        Slider(
-                            value = brightness,
-                            onValueChange = { brightness = it },
-                            valueRange = 0f..100f
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("0%", color = MutedText, fontSize = 12.sp)
-                            Text("100%", color = MutedText, fontSize = 12.sp)
-                        }
-                    }
-                }
-
-                // Colour presets
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        "Lighting Presets",
-                        fontSize = 20.sp
-                    )
-
-                    presets.forEach { (name, hex) ->
-                        PresetCard(
-                            name = name,
-                            hex = hex,
-                            selected = selectedColor == hex,
-                            onClick = {
-                                selectedColor = hex
-                                hexInput = hex
-                            }
-                        )
-                    }
-                }
-
-                // Colour selection
+                // Connection card
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = CardBackground
@@ -211,93 +172,211 @@ fun SmartLedApp() {
                         modifier = Modifier.padding(18.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text(
-                            "Custom Colour",
-                            fontSize = 19.sp
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(55.dp)
-                                .background(
-                                    previewColor,
-                                    RoundedCornerShape(12.dp)
-                                )
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("ESP32 CONNECTION", color = MutedText)
+                            Text(
+                                if (connected) "ONLINE" else "OFFLINE",
+                                color = if (connected) {
+                                    Color(0xFF70D99A)
+                                } else {
+                                    Accent
+                                }
+                            )
+                        }
 
                         OutlinedTextField(
-                            value = hexInput,
-                            onValueChange = { hexInput = it },
-                            label = { Text("HEX colour") },
-                            placeholder = { Text("#FFB66D") },
+                            value = ipAddress,
+                            onValueChange = { ipAddress = it },
+                            label = { Text("ESP32 IP address") },
                             singleLine = true,
+                            enabled = !connected,
                             modifier = Modifier.fillMaxWidth()
                         )
 
-                        Button(
-                            onClick = {
-                                val value = hexInput.trim()
-                                val valid = value.matches(
-                                    Regex("#[0-9a-fA-F]{6}")
-                                )
-                                if (valid) {
-                                    selectedColor = value.uppercase()
-                                    hexInput = value.uppercase()
+                        if (!connected) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        loading = true
+                                        errorMessage = ""
+                                        statusMessage = "Connecting..."
+
+                                        try {
+                                            val candidate =
+                                                HttpLedTransport(
+                                                    ipAddress.trim()
+                                                )
+
+                                            if (candidate.connect()) {
+                                                transport = candidate
+                                                connected = true
+                                                statusMessage =
+                                                    "Connected. Reading configuration..."
+
+                                                refreshConfiguration(candidate)
+                                            } else {
+                                                candidate.disconnect()
+                                                statusMessage =
+                                                    "Connection failed"
+                                                errorMessage =
+                                                    "Check the ESP32 IP and Wi-Fi network."
+                                            }
+                                        } catch (exception: Exception) {
+                                            statusMessage =
+                                                "Connection failed"
+                                            errorMessage =
+                                                exception.message
+                                                    ?: "Unknown network error"
+                                        } finally {
+                                            loading = false
+                                        }
+                                    }
+                                },
+                                enabled = !loading && ipAddress.isNotBlank(),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Connect to ESP32")
+                            }
+                        } else {
+                            Row(
+                                horizontalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        transport?.let {
+                                            refreshConfiguration(it)
+                                        }
+                                    },
+                                    enabled = !loading,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Refresh")
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Apply Colour")
+
+                                OutlinedButton(
+                                    onClick = {
+                                        scope.launch {
+                                            transport?.disconnect()
+                                            transport = null
+                                            connected = false
+                                            segments = emptyList()
+                                            totalLeds = 0
+                                            statusMessage = "Disconnected"
+                                        }
+                                    },
+                                    enabled = !loading,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Disconnect")
+                                }
+                            }
+                        }
+
+                        if (loading) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        Text(
+                            statusMessage,
+                            color = MutedText,
+                            fontSize = 13.sp
+                        )
+
+                        if (errorMessage.isNotBlank()) {
+                            Text(
+                                errorMessage,
+                                color = Color(0xFFFF8585),
+                                fontSize = 13.sp
+                            )
                         }
                     }
                 }
 
-                // Segment selection
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        "LED Segments",
-                        fontSize = 20.sp
-                    )
+                // Live device configuration
+                if (connected && segments.isNotEmpty()) {
 
-                    Text(
-                        "Choose one of your six sections.",
-                        color = MutedText,
-                        fontSize = 13.sp
-                    )
-
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = CardBackground
+                        ),
+                        shape = RoundedCornerShape(18.dp)
                     ) {
-                        (1..6).chunked(3).forEach { group ->
+                        Column(
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                "DEVICE CONFIGURATION",
+                                color = Accent,
+                                fontSize = 12.sp,
+                                letterSpacing = 1.sp
+                            )
+
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween
                             ) {
-                                group.forEach { segment ->
-                                    FilterChip(
-                                        selected = selectedSegment == segment,
-                                        onClick = {
-                                            selectedSegment = segment
-                                        },
-                                        label = {
-                                            Text("Segment $segment")
-                                        }
-                                    )
-                                }
+                                Text("Addressable sections")
+                                Text(
+                                    "$totalLeds",
+                                    color = Accent
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween
+                            ) {
+                                Text("Master brightness")
+                                Text(
+                                    "$masterBrightness%",
+                                    color = Accent
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween
+                            ) {
+                                Text("Total segments")
+                                Text(
+                                    "${segments.size}",
+                                    color = Accent
+                                )
                             }
                         }
                     }
 
                     Text(
-                        "Selected: Segment $selectedSegment",
+                        "LIVE LED SEGMENTS",
                         color = Accent,
-                        fontSize = 13.sp
+                        fontSize = 13.sp,
+                        letterSpacing = 1.sp
+                    )
+
+                    segments.forEach { segment ->
+                        SegmentCard(segment)
+                    }
+                }
+
+                if (connected && segments.isEmpty() && !loading) {
+                    Text(
+                        "Connected, but no segments were returned. " +
+                            "Try refreshing the configuration.",
+                        color = MutedText
                     )
                 }
 
-                // Footer
                 HorizontalDivider(color = CardBackground)
 
                 Text(
@@ -308,8 +387,8 @@ fun SmartLedApp() {
                 )
 
                 Text(
-                    "Controls currently run in preview mode. " +
-                        "ESP32 communication will be added next.",
+                    "Live configuration mode. LED output controls " +
+                        "will be enabled after communication testing.",
                     color = MutedText,
                     fontSize = 12.sp
                 )
@@ -319,54 +398,68 @@ fun SmartLedApp() {
 }
 
 @Composable
-fun PresetCard(
-    name: String,
-    hex: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    val swatchColor = Color(
-        android.graphics.Color.parseColor(hex)
-    )
+private fun SegmentCard(segment: SegmentUi) {
+    val swatch = runCatching {
+        Color(android.graphics.Color.parseColor(segment.color))
+    }.getOrDefault(Color.White)
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (selected) {
-                Color(0xFF354253)
-            } else {
-                CardBackground
-            }
+            containerColor = CardBackground
         ),
-        shape = RoundedCornerShape(14.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Row(
-            modifier = Modifier.padding(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(15.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(34.dp)
+                    .size(42.dp)
                     .background(
-                        swatchColor,
+                        swatch,
                         RoundedCornerShape(10.dp)
                     )
             )
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(name, fontSize = 15.sp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
                 Text(
-                    hex,
+                    segment.name,
+                    fontSize = 16.sp
+                )
+
+                Text(
+                    "ID ${segment.id} • Start ${segment.start} • " +
+                        "${segment.count} sections",
+                    color = MutedText,
+                    fontSize = 11.sp
+                )
+
+                Text(
+                    "${segment.brightness}% • ${segment.color}",
                     color = MutedText,
                     fontSize = 12.sp
                 )
             }
 
-            if (selected) {
-                Text("SELECTED", color = Accent, fontSize = 10.sp)
+            Column(
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    if (segment.enabled) "ON" else "OFF",
+                    color = if (segment.enabled) {
+                        Color(0xFF70D99A)
+                    } else {
+                        MutedText
+                    },
+                    fontSize = 12.sp
+                )
             }
         }
     }
